@@ -8,6 +8,7 @@ from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import asyncio
 
 
 # --- CONFIGURATION ---
@@ -47,7 +48,7 @@ collection = db[COLLECTION_NAME]
 
 
 scheduler = AsyncIOScheduler(timezone=utc)
-scheduler.start()
+# Do NOT start scheduler here
 
 
 # --- HELPERS ---
@@ -287,19 +288,22 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- MAIN ---
 
 
+async def main():
+    scheduler.start()
+    schedule_existing_posts()
+    await application.run_polling()
+
+
 if __name__ == "__main__":
     import os
     from telegram.ext import filters
-
 
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         print("Error: Set your TELEGRAM_BOT_TOKEN environment variable.")
         exit(1)
 
-
     application = ApplicationBuilder().token(TOKEN).build()
-
 
     # Conversation handler for adding posts
     add_conv_handler = ConversationHandler(
@@ -312,14 +316,8 @@ if __name__ == "__main__":
         allow_reentry=True,
     )
 
-
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(add_conv_handler)
 
-
-    # Schedule all existing posts on startup
-    schedule_existing_posts()
-
-
-    application.run_polling()
+    asyncio.run(main())
