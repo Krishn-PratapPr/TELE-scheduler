@@ -46,7 +46,14 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-client = MongoClient(MONGODB_URI)
+client = MongoClient(
+    MONGODB_URI,
+    tls=True,
+    tlsAllowInvalidCertificates=False,
+    tlsInsecure=False,
+    serverSelectionTimeoutMS=30000,
+)
+
 db = client[DB_NAME]
 collection = db[COLLECTION_NAME]
 
