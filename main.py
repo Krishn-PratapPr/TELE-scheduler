@@ -1,31 +1,17 @@
 # main.py
 
-import os
 import logging
-import asyncio
-from datetime import time as dtime
-
+from datetime import datetime, time as dtime
 from pytz import utc
 from pymongo import MongoClient
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
-    ConversationHandler,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import aiohttp
-from aiohttp import web
-
 
 # --- CONFIGURATION ---
 
 AUTHORIZED_USERS = [5818833182]  # Replace with your Telegram user ID(s)
-CHANNEL_ID = -1002767091522      # Replace with your Telegram channel ID (negative for channels)
+CHANNEL_ID = -1002767091522     # Replace with your Telegram channel ID (negative for channels)
 
 MONGODB_URI = "mongodb+srv://rfbotuser:rfbotuser@cluster0.xh0wm3h.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
 DB_NAME = "telegram_bot"
@@ -46,24 +32,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-client = MongoClient(
-    MONGODB_URI,
-    tls=True,
-    tlsAllowInvalidCertificates=False,
-    tlsInsecure=False,
-    serverSelectionTimeoutMS=30000,
-)
-
+client = MongoClient(MONGODB_URI)
 db = client[DB_NAME]
 collection = db[COLLECTION_NAME]
 
 scheduler = AsyncIOScheduler(timezone=utc)
+scheduler.start()
 
 # --- HELPERS ---
 
 def is_authorized(user_id: int) -> bool:
     return user_id in AUTHORIZED_USERS
-
 
 def build_main_menu():
     keyboard = [
@@ -72,16 +51,14 @@ def build_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-
 def build_post_buttons(post_id):
     keyboard = [
         [
             InlineKeyboardButton("Edit", callback_data=f"edit|{post_id}"),
-            InlineKeyboardButton("Delete", callback_data=f"delete|{post_id}"),
+            InlineKeyboardButton("Delete", callback_data=f"delete|{post_id}")
         ]
     ]
     return InlineKeyboardMarkup(keyboard)
-
 
 def post_to_channel(post):
     try:
@@ -97,8 +74,8 @@ def post_to_channel(post):
     except Exception as e:
         logger.error(f"Error posting message to channel: {e}")
 
-
 def schedule_existing_posts():
+    # Load all scheduled posts from DB and schedule them
     posts = list(collection.find())
     for post in posts:
         post_time = post["schedule_time"]
@@ -112,10 +89,9 @@ def schedule_existing_posts():
             args=[post],
             id=job_id,
             replace_existing=True,
-            timezone=utc,
+            timezone=utc
         )
     logger.info(f"Scheduled {len(posts)} posts.")
-
 
 def parse_time_str(time_str):
     try:
@@ -126,24 +102,6 @@ def parse_time_str(time_str):
         return None
     return None
 
-# --- WEB SERVER (for Render port binding) ---
-
-async def handle_healthcheck(request):
-    return web.Response(text="OK")
-
-async def init_webserver():
-    app = web.Application()
-    app.router.add_get("/", handle_healthcheck)
-    app.router.add_get("/healthz", handle_healthcheck)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv("PORT", "10000"))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info(f"Health server started on port {port}")
-    return runner
-
 # --- HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -152,9 +110,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are not authorized to use this bot.")
         return
     await update.message.reply_text(
-        "Welcome to the Daily Post Scheduler Bot.\nSelect an action:",
-        reply_markup=build_main_menu(),
+        "Welcome to the Daily Post Scheduler Bot.\nSelect an action:", 
+        reply_markup=build_main_menu()
     )
+
+# CallbackQuery handler for main menu buttons and actions
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -186,6 +146,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("delete|"):
         post_id = data.split("|")[1]
         collection.delete_one({"_id": post_id, "user_id": user_id})
+        # Remove scheduled job
         try:
             scheduler.remove_job(post_id)
         except Exception:
@@ -193,6 +154,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"Deleted scheduled post {post_id}.", reply_markup=build_main_menu())
         return
 
+    # Additional Edit handler (for simplicity, edit not implemented fully here)
     elif data.startswith("edit|"):
         await query.edit_message_text("Edit feature coming soon!", reply_markup=build_main_menu())
         return
@@ -201,6 +163,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Unknown action.", reply_markup=build_main_menu())
         return
 
+
+# Add Post conversation: receive message or photo
+
 async def add_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_authorized(user_id):
@@ -208,6 +173,7 @@ async def add_receive_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return ConversationHandler.END
 
     if update.message.photo:
+        # Take largest photo size
         photo = update.message.photo[-1]
         context.user_data["message_type"] = "image"
         context.user_data["image_file_id"] = photo.file_id
@@ -235,6 +201,7 @@ async def add_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Invalid time format. Please send time as HH:MM in 24h format, e.g. 14:45")
         return ADD_WAITING_FOR_TIME
 
+    # Save to DB
     message_type = context.user_data["message_type"]
     content = context.user_data["content"]
     image_file_id = context.user_data["image_file_id"]
@@ -250,8 +217,10 @@ async def add_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     res = collection.insert_one(post_doc)
     post_id = str(res.inserted_id)
 
+    # Schedule the job
     hour, minute = valid_time.hour, valid_time.minute
 
+    # Because job stores post copy, we re-load it fresh each time from DB to avoid stale data, so define wrapper:
     def job_callback():
         fresh_post = collection.find_one({"_id": res.inserted_id})
         if fresh_post:
@@ -264,7 +233,7 @@ async def add_receive_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         minute=minute,
         id=post_id,
         replace_existing=True,
-        timezone=utc,
+        timezone=utc
     )
 
     await update.message.reply_text(f"Scheduled your post daily at {time_str} UTC.", reply_markup=build_main_menu())
@@ -274,19 +243,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Operation canceled.", reply_markup=build_main_menu())
     return ConversationHandler.END
 
-
 # --- MAIN ---
 
-
-async def main():
-    scheduler.start()
-    schedule_existing_posts()
-    web_runner = await init_webserver()
-    await application.run_polling()
-    await web_runner.cleanup()
-
-
 if __name__ == "__main__":
+    import os
     from telegram.ext import filters
 
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -296,6 +256,7 @@ if __name__ == "__main__":
 
     application = ApplicationBuilder().token(TOKEN).build()
 
+    # Conversation handler for adding posts
     add_conv_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern="add")],
         states={
@@ -310,4 +271,7 @@ if __name__ == "__main__":
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(add_conv_handler)
 
-    asyncio.run(main())
+    # Schedule all existing posts on startup
+    schedule_existing_posts()
+
+    application.run_polling()
